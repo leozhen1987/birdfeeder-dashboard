@@ -237,9 +237,42 @@ function bindEditEvents() {
                 if (field === 'price' || field === 'sales' || field === 'amount') {
                     const parsed = parseFloat(newVal.replace(/[$,]/g, ''));
                     if (isNaN(parsed)) { e.target.textContent = orig; return; }
-                    record.monthly_data[mIdx][field] = parsed;
+                    const m = record.monthly_data[mIdx];
+                    m[field] = parsed;
                     edits[key] = parsed;
                     e.target.classList.add('modified');
+                    // 公式联动: 销量 × 均价 = 销售额
+                    // 改 sales 或 price → 自动重算 amount = sales × price
+                    // 改 amount → 保持 price 不变, 反推 sales = amount / price
+                    let autoUpdated = null;
+                    if (field === 'sales' || field === 'price') {
+                        const newAmount = Math.round(m.sales * m.price);
+                        if (newAmount !== m.amount) {
+                            m.amount = newAmount;
+                            edits[`${asin}.${monthDate}.amount`] = newAmount;
+                            autoUpdated = 'amount';
+                        }
+                    } else if (field === 'amount') {
+                        if (m.price > 0) {
+                            const newSales = Math.round(parsed / m.price);
+                            if (newSales !== m.sales) {
+                                m.sales = newSales;
+                                edits[`${asin}.${monthDate}.sales`] = newSales;
+                                autoUpdated = 'sales';
+                            }
+                        }
+                    }
+                    // 同步更新 DOM 中被联动的字段显示
+                    if (autoUpdated) {
+                        const sel = `#table-body .editable[data-asin="${asin}"][data-month="${monthDate}"][data-field="${autoUpdated}"]`;
+                        const linkedEl = document.querySelector(sel);
+                        if (linkedEl) {
+                            linkedEl.textContent = m[autoUpdated];
+                            linkedEl.classList.add('modified');
+                            linkedEl.style.background = '#dbeafe';
+                            linkedEl.title = '自动联动: ' + autoUpdated + ' = sales × price';
+                        }
+                    }
                     recomputeAggregates(record);
                 }
             } else {
@@ -301,7 +334,7 @@ function bindExpandEvents() {
                         <div><small>价</small><br><span class="editable" contenteditable="true" data-asin="${asin}" data-month="${date}" data-field="price">${m.price}</span></div>
                     </div></div>`;
             }).join('');
-            detailTr.innerHTML = `<td colspan="10" style="background:#f9fafb;padding:10px">月度可编辑数据:<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${cells}</div></td>`;
+            detailTr.innerHTML = `<td colspan="10" style="background:#f9fafb;padding:10px">月度可编辑数据 <span style="font-size:11px;color:#2563eb;background:#dbeafe;padding:2px 8px;border-radius:4px;margin-left:6px">📐 公式联动: 销量 × 均价 = 销售额 (改一个自动算另一个)</span><div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">${cells}</div></td>`;
             tr.parentNode.insertBefore(detailTr, tr.nextSibling);
             btn.textContent = '折叠';
             bindEditEvents();
