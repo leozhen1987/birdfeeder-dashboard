@@ -126,7 +126,7 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
     </div>
     <div class="dash-summary"><h3 style="margin:0;font-size:15px">📈 大盘 <span style="font-size:12px;font-weight:normal;color:#6b7280" id="dash-filter-label"></span></h3><div class="dash-summary-grid" id="dash-summary"></div></div>
     <div class="chart-wrap"><h3 id="chart-title" style="margin:0 0 12px 0;font-size:15px">月度走势</h3><canvas id="trend-chart" class="chart-canvas"></canvas></div>
-    <div class="chart-wrap"><h3 id="share-title" style="margin:0 0 12px 0;font-size:15px">份额堆叠</h3><canvas id="share-chart" class="chart-canvas"></canvas></div>
+    <div class="chart-wrap"><h3 id="seg-title" style="margin:0 0 12px 0;font-size:15px">📊 每月各价格段销售额分布</h3><div style="display:flex;gap:8px;margin-bottom:8px"><button id="seg-view-share" class="active" style="font-size:12px;padding:4px 10px;border:1px solid #e5e7eb;background:#dbeafe;border-radius:4px;cursor:pointer">份额%</button><button id="seg-view-abs" style="font-size:12px;padding:4px 10px;border:1px solid #e5e7eb;background:#fff;border-radius:4px;cursor:pointer">绝对值</button></div><canvas id="share-chart" class="chart-canvas"></canvas></div>
     <div class="brand-leaderboard"><h3 style="margin:0 0 12px 0;font-size:15px">🏆 品牌排行</h3><table class="lb-table" id="lb-table"></table></div>
 </div>
 <!-- Modals -->
@@ -519,7 +519,7 @@ function renderDashboard() {
     const fmt = dashState.metric === 'gmv' ? fmt$ : fmtN;
     $('#dash-filter-label').textContent = `(${segLabel} | ${dashState.metric==='gmv'?'销售额':'销量'})`;
     $('#dash-summary').innerHTML = `
-        <div class="dash-summary-item"><div class="dash-summary-label">14月累计</div><div class="dash-summary-value">${fmt(total)}</div></div>
+        <div class="dash-summary-item" title="当前段位筛选下的全市场14个月合计(不只是TOP-N品牌, 而是所有品牌的总和)"><div class="dash-summary-label">14月累计 (全市场${segLabel})</div><div class="dash-summary-value">${fmt(total)}</div></div>
         <div class="dash-summary-item"><div class="dash-summary-label">峰值月</div><div class="dash-summary-value">${peak[0]}</div></div>
         <div class="dash-summary-item"><div class="dash-summary-label">领头羊</div><div class="dash-summary-value" style="font-size:16px">${top1[0]}</div></div>
         <div class="dash-summary-item"><div class="dash-summary-label">CR3</div><div class="dash-summary-value">${fmtPct(cr3)}</div></div>
@@ -545,13 +545,53 @@ function renderDashboard() {
     $('#chart-title').textContent = `${segLabel} TOP${dashState.topN}${pinSuffix} ${dashState.metric==='gmv'?'销售额':'销量'} ${dashState.display==='share'?'份额%':'走势'}`;
     if (trendChart) trendChart.destroy();
     trendChart = new Chart($('#trend-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets}, options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{y:{beginAtZero:true,ticks:{callback:v=>dashState.display==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}}}});
-    const shareDS = top.map((b,i) => { const isPinned = PINNED_BRANDS.includes(b); const color = isPinned ? (PIN_COLORS[b]||'#000') : BRAND_COLORS[i%BRAND_COLORS.length]; return {label: isPinned ? `⭐ ${b}` : b, data:ALL_MONTHS.map(m=>monthTotals[m]>0?(bm[b]?.[m]||0)/monthTotals[m]*100:0), backgroundColor:color+'CC', borderWidth:1, fill:true}; });
-    if (other.length) shareDS.push({label:`Other`, data:ALL_MONTHS.map(m=>{const s=other.reduce((sm,b)=>sm+(bm[b]?.[m]||0),0); return monthTotals[m]>0?s/monthTotals[m]*100:0;}), backgroundColor:'#9ca3af80', borderWidth:1, fill:true});
+    // ===== 价格段月度分布图(替代原品牌份额堆叠) =====
+    // 注意: 这个图不受 dashState.segment 影响, 始终按价格段拆分
+    const SEG_LIST = ['$0-50','$50-100','$100-150','$150-200','$200+'];
+    const SEG_COLORS = {'$0-50':'#94a3b8','$50-100':'#22d3ee','$100-150':'#10b981','$150-200':'#f59e0b','$200+':'#ef4444'};
+    const segMonthGMV = {}; SEG_LIST.forEach(s => segMonthGMV[s] = {}); ALL_MONTHS.forEach(m => SEG_LIST.forEach(s => segMonthGMV[s][m] = 0));
+    DATA.forEach(r => r.monthly_data.forEach(md => {
+        const p = md.price; if (p<=0) return;
+        const s = p<50?'$0-50':p<100?'$50-100':p<150?'$100-150':p<200?'$150-200':'$200+';
+        const v = dashState.metric === 'gmv' ? md.amount : md.sales;
+        if (v>0) segMonthGMV[s][md.date] += v;
+    }));
+    const segMonthTotals = {}; ALL_MONTHS.forEach(m => segMonthTotals[m] = SEG_LIST.reduce((sm,s)=>sm+segMonthGMV[s][m], 0));
+    const segMode = dashState.segView || 'share';
+    const segDS = SEG_LIST.map(s => ({
+        label: s,
+        data: ALL_MONTHS.map(m => segMode==='share' ? (segMonthTotals[m]>0 ? segMonthGMV[s][m]/segMonthTotals[m]*100 : 0) : segMonthGMV[s][m]),
+        backgroundColor: SEG_COLORS[s]+'DD', borderColor: SEG_COLORS[s], borderWidth:1
+    }));
+    $('#seg-title').textContent = `📊 每月各价格段${dashState.metric==='gmv'?'销售额':'销量'}${segMode==='share'?'份额%':'分布(绝对值)'}`;
     if (shareChart) shareChart.destroy();
-    shareChart = new Chart($('#share-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets:shareDS}, options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{y:{stacked:true,max:100,ticks:{callback:v=>v+'%'}}}}});
+    shareChart = new Chart($('#share-chart'), {
+        type:'bar',
+        data:{labels:ALL_MONTHS, datasets:segDS},
+        options:{
+            responsive:true,
+            plugins:{
+                legend:{position:'bottom'},
+                tooltip:{callbacks:{label:(ctx)=> {
+                    const s = ctx.dataset.label; const m = ctx.label;
+                    const abs = segMonthGMV[s][m]; const total = segMonthTotals[m];
+                    const pct = total>0 ? (abs/total*100).toFixed(1) : 0;
+                    const fmtFn = dashState.metric==='gmv' ? fmt$ : fmtN;
+                    return `${s}: ${fmtFn(abs)} (${pct}%)`;
+                }}}
+            },
+            scales:{
+                x:{stacked:true},
+                y:{stacked:true, max: segMode==='share'?100:undefined, ticks:{callback:v=> segMode==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}
+            }
+        }
+    });
+    // ===== 排行榜 + 月合计行 =====
     const lbH = '<tr><th class="lb-rank">#</th><th>品牌</th>' + ALL_MONTHS.map(m=>`<th class="num">${m.replace('2025-','25/').replace('2026-','26/')}</th>`).join('') + '<th class="num">合计</th><th class="num">份额</th></tr>';
     const lbR = top.map((b,i) => { const t = bt[b]; const tds = ALL_MONTHS.map(m => `<td class="num">${(bm[b]?.[m]||0)===0?'—':fmt(bm[b][m])}</td>`).join(''); const trueRank = sorted.findIndex(([bb])=>bb===b)+1; const pinned = PINNED_BRANDS.includes(b) && trueRank > dashState.topN; const rankCell = pinned ? `<span title="核心关注品牌(强制显示),原排名#${trueRank}">⭐#${trueRank}</span>` : (i+1); const bgStyle = pinned ? ' style="background:#fef3c7"' : ''; return `<tr${bgStyle}><td class="lb-rank">${rankCell}</td><td><strong>${b}</strong>${pinned?' <span style="color:#92400e;font-size:10px;background:#fde68a;padding:1px 4px;border-radius:3px">PIN</span>':''}</td>${tds}<td class="num"><strong>${fmt(t)}</strong></td><td class="num">${fmtPct(t/total)}</td></tr>`; }).join('');
-    $('#lb-table').innerHTML = lbH + lbR;
+    // 月合计行: 该段位 全市场每个月的合计(即 monthTotals)
+    const totalsRow = `<tr style="background:#1e293b;color:#fff;font-weight:700"><td class="lb-rank">∑</td><td>月度合计(${segLabel})</td>${ALL_MONTHS.map(m=>`<td class="num">${monthTotals[m]>0?fmt(monthTotals[m]):'—'}</td>`).join('')}<td class="num"><strong>${fmt(total)}</strong></td><td class="num">100%</td></tr>`;
+    $('#lb-table').innerHTML = lbH + lbR + totalsRow;
 }
 $('#dash-segment').addEventListener('change', e => { dashState.segment = e.target.value; renderDashboard(); });
 $('#dash-topn').addEventListener('change', e => { dashState.topN = parseInt(e.target.value); renderDashboard(); });
@@ -559,5 +599,7 @@ $('#metric-gmv').onclick = () => { dashState.metric='gmv'; $('#metric-gmv').clas
 $('#metric-sales').onclick = () => { dashState.metric='sales'; $('#metric-sales').classList.add('active'); $('#metric-gmv').classList.remove('active'); renderDashboard(); };
 $('#show-absolute').onclick = () => { dashState.display='absolute'; $('#show-absolute').classList.add('active'); $('#show-share').classList.remove('active'); renderDashboard(); };
 $('#show-share').onclick = () => { dashState.display='share'; $('#show-share').classList.add('active'); $('#show-absolute').classList.remove('active'); renderDashboard(); };
+$('#seg-view-share').onclick = () => { dashState.segView='share'; $('#seg-view-share').style.background='#dbeafe'; $('#seg-view-abs').style.background='#fff'; renderDashboard(); };
+$('#seg-view-abs').onclick = () => { dashState.segView='abs'; $('#seg-view-abs').style.background='#dbeafe'; $('#seg-view-share').style.background='#fff'; renderDashboard(); };
 applyFilters();
 </script></body></html>
