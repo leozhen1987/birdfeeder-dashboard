@@ -162,6 +162,9 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
 <div id="forecast" class="forecast">
     <div class="fc-controls">
         <span style="font-size:13px;font-weight:600">📈 销量预测</span>
+        <button id="btn-fc-download" style="font-size:12px;padding:5px 12px;background:#10b981;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600" title="下载当前所有输入/目标/实际记录为JSON文件,方便备份和分享">📥 下载预算</button>
+        <button id="btn-fc-import" style="font-size:12px;padding:5px 12px;background:#2563eb;color:#fff;border:none;border-radius:5px;cursor:pointer" title="从之前下载的JSON文件恢复">📤 导入预算</button>
+        <input type="file" id="fc-import-file" accept=".json" style="display:none"/>
         <button id="btn-fc-reset" style="font-size:12px;padding:5px 12px;background:#e5e7eb;border:none;border-radius:5px;cursor:pointer">↺ 全部重置</button>
         <span style="font-size:11px;color:#6b7280;margin-left:auto">流程: 第1部分填行→点计算→第2部分填目标%→第3部分录入实际看偏差</span>
     </div>
@@ -1301,6 +1304,98 @@ $('#btn-fc-reset').onclick = () => {
     $('#fc-part2-section').style.display = 'none';
     $('#fc-part3-section').style.display = 'none';
     renderForecastInputs();
+};
+
+// 下载预算 (JSON 文件)
+$('#btn-fc-download').onclick = () => {
+    // 触发一次计算确保 forecasts 是最新的
+    if (forecastState.inputs.length > 0 && !forecastState.calculated) {
+        if (!confirm('尚未点过"计算",当前下载只包含输入+目标+实际,不含预测结果。继续?')) return;
+    }
+    const exportData = {
+        meta: {
+            generated_at: new Date().toISOString(),
+            tool: 'BirdFeederCam 销量预测',
+            version: '1.0',
+            data_source: 'leozhen1987.github.io/birdfeeder-dashboard',
+        },
+        // 输入 (第1部分)
+        inputs: forecastState.inputs,
+        // 预测结果 (计算后的快照, 含各段位金额)
+        forecasts: forecastState.forecasts,
+        // 目标% 矩阵 (第2部分)
+        targets: forecastState.targets,
+        // 实际销售记录 (第3部分)
+        actuals: forecastState.actuals,
+        calculated: forecastState.calculated,
+    };
+    // 同时生成一份易读的 summary 放到文件顶部注释里
+    let summary = '// === 销量预测备份 ===\n';
+    summary += `// 生成时间: ${new Date().toLocaleString('zh-CN')}\n`;
+    summary += `// 预测月份数: ${forecastState.inputs.length}\n`;
+    if (forecastState.forecasts.length) {
+        const grandTotal = forecastState.forecasts.reduce((s,f)=>s+f.total, 0);
+        summary += `// 预测总额: ${fmt$(grandTotal)}\n`;
+        let targetTotal = 0;
+        forecastState.forecasts.forEach(f => {
+            FORECAST_SEGMENTS.forEach(s => {
+                targetTotal += f.bySegment[s] * (forecastState.targets[f.label]?.[s] || 0) / 100;
+            });
+        });
+        summary += `// 目标总额: ${fmt$(targetTotal)}\n`;
+    }
+    summary += `// 实际记录数: ${forecastState.actuals.length}\n`;
+    summary += '\n';
+    const json = summary + JSON.stringify(exportData, null, 2);
+    const blob = new Blob([json], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const ts = new Date().toISOString().replace(/[:T]/g,'-').substring(0,16);
+    a.href = url;
+    a.download = `销量预测_${ts}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+};
+
+// 导入预算
+$('#btn-fc-import').onclick = () => $('#fc-import-file').click();
+$('#fc-import-file').onchange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+        try {
+            // 去掉文件顶部的注释行
+            let content = ev.target.result;
+            content = content.replace(/^\/\/.*$/gm, '').trim();
+            const data = JSON.parse(content);
+            if (!data.inputs || !Array.isArray(data.inputs)) throw new Error('不是有效的预算文件');
+            if (!confirm(`将导入 ${data.inputs.length} 行预测 + ${(data.actuals||[]).length} 条实际记录。当前未保存的数据会被覆盖。继续?`)) return;
+            forecastState.inputs = data.inputs;
+            forecastState.forecasts = data.forecasts || [];
+            forecastState.targets = data.targets || {};
+            forecastState.actuals = data.actuals || [];
+            forecastState.calculated = !!data.calculated && forecastState.forecasts.length > 0;
+            // 重新渲染
+            renderForecastInputs();
+            if (forecastState.calculated) {
+                $('#fc-chart-area').style.display = 'block';
+                $('#fc-part2-section').style.display = 'block';
+                $('#fc-part3-section').style.display = 'block';
+                renderForecastChart();
+                renderTargetTable();
+                renderActualTable();
+                renderDeviationTable();
+            }
+            alert(`✓ 已导入预算\n生成时间: ${data.meta?.generated_at || '未知'}`);
+        } catch (err) {
+            alert('导入失败: ' + err.message);
+        }
+        e.target.value = ''; // reset
+    };
+    reader.readAsText(file);
 };
 
 $('#me-month').onchange = e => { meState.month = e.target.value; renderMonthEdit(); };
