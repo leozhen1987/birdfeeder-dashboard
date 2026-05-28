@@ -146,30 +146,35 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
 </div>
 <div id="forecast" class="forecast">
     <div class="fc-controls">
-        <label>🎯 预测目标月: <input type="text" id="fc-future-label" value="2026-06" style="width:100px" placeholder="如 2026-06 或 6月旺季"/></label>
+        <span style="font-size:13px;font-weight:600">📈 销量预测(月度)</span>
         <button id="btn-fc-reset" style="font-size:12px;padding:5px 12px;background:#e5e7eb;border:none;border-radius:5px;cursor:pointer">↺ 重置</button>
-        <span style="font-size:12px;color:#6b7280;margin-left:auto">公式: <b>价格段占比%</b> × <b>大盘总额$</b> = <b>该段预测销售额</b>;再 × <b>销售目标%</b> = <b>该段销售额目标</b></span>
+        <span style="font-size:12px;color:#6b7280;margin-left:auto">公式: <b>该口径月总额$</b> × <b>调整系数%</b> = <b>该月预测销售额</b>;再 × <b>销售目标%</b> = <b>销售额目标</b></span>
     </div>
-    <h3>📊 第一部分:价格段销售额预测</h3>
+    <h3>📊 第一部分:未来月份销售额预测</h3>
+    <p style="font-size:12px;color:#6b7280;margin:-6px 0 8px 0">每行 = 一个未来月份的预测;选择一个历史口径月(用其全价格段结构),再乘以调整系数%。只展示行总额,末尾汇总。</p>
     <table id="fc-table-1">
         <thead><tr>
             <th>#</th>
-            <th>价格段</th>
-            <th>占比来源月</th>
-            <th style="text-align:right">该段占比%</th>
-            <th>总额来源月</th>
-            <th style="text-align:right">大盘总额$</th>
+            <th style="width:160px">未来月份/标签 ✎</th>
+            <th style="width:150px">历史口径月(全段位)</th>
+            <th style="width:90px;text-align:center">调整系数% ✎</th>
             <th style="text-align:right">预测销售额</th>
+            <th style="width:70px;text-align:center">操作</th>
         </tr></thead>
         <tbody id="fc-tbody-1"></tbody>
     </table>
+    <div style="margin:-6px 0 16px 0;display:flex;gap:10px;align-items:center">
+        <button id="btn-fc-add-row" style="font-size:12px;padding:5px 14px;background:#2563eb;color:#fff;border:none;border-radius:5px;cursor:pointer">+ 添加一行</button>
+        <span style="font-size:11px;color:#6b7280" id="fc-row-count"></span>
+    </div>
     <h3>🎯 第二部分:加入销售目标%</h3>
+    <p style="font-size:12px;color:#6b7280;margin:-6px 0 8px 0">基于第一部分的预测,每行设定销售目标%(默认110%),系统直接告诉你对应的销售额目标。</p>
     <table id="fc-table-2">
         <thead><tr>
             <th>#</th>
-            <th>价格段</th>
+            <th>未来月份/标签</th>
             <th style="text-align:right">预测销售额</th>
-            <th style="text-align:center">销售目标% ✎</th>
+            <th style="width:90px;text-align:center">销售目标% ✎</th>
             <th style="text-align:right">销售额目标</th>
             <th style="text-align:right">vs 预测</th>
         </tr></thead>
@@ -975,97 +980,114 @@ function fcMonthTotal(month) {
     DATA.forEach(r => { const md = r.monthly_data.find(x => x.date === month); if (md) t += md.amount; });
     return t;
 }
-const forecastState = {
-    rows: FORECAST_SEGMENTS.map(seg => ({
-        segment: seg,
-        shareMonth: '2026-05',
-        totalMonth: '2026-05',
-        targetPct: 110, // 110% 默认: 比上月预测增长10%
-    }))
-};
+// 默认 6 行 (6月-11月) 用 2026-05 作口径
+function defaultForecastRows() {
+    const futureLabels = ['2026-06','2026-07','2026-08','2026-09','2026-10','2026-11'];
+    return futureLabels.map(label => ({
+        label: label,
+        calMonth: '2026-05',
+        coefPct: 100,
+        targetPct: 110,
+    }));
+}
+const forecastState = { rows: defaultForecastRows() };
+
 function renderForecast() {
     const tbody1 = $('#fc-tbody-1');
     const tbody2 = $('#fc-tbody-2');
-    const futureLabel = $('#fc-future-label').value.trim() || '未来某月';
-
-    // 月份选项
-    const monthOpts = ALL_MONTHS.slice().reverse().map(m => `<option value="${m}">${m}</option>`).join('');
-
     let totalForecast = 0;
     let totalTarget = 0;
     let rowsHtml1 = '';
     let rowsHtml2 = '';
+    const monthOpts = ALL_MONTHS.slice().reverse().map(m => `<option value="${m}">${m}</option>`).join('');
 
     forecastState.rows.forEach((row, i) => {
-        // 第一部分: 占比 × 总额
-        const segTotals = fcMonthSegmentTotals(row.shareMonth);
-        const shareMonthTotal = Object.values(segTotals).reduce((s,v)=>s+v, 0);
-        const segValue = segTotals[row.segment] || 0;
-        const sharePct = shareMonthTotal > 0 ? (segValue / shareMonthTotal * 100) : 0;
-        const totalMonthRevenue = fcMonthTotal(row.totalMonth);
-        const forecast = sharePct / 100 * totalMonthRevenue;
+        const calTotal = fcMonthTotal(row.calMonth);
+        const forecast = calTotal * (row.coefPct / 100);
         totalForecast += forecast;
-
-        // 第二部分: 目标
-        const target = forecast * row.targetPct / 100;
+        const target = forecast * (row.targetPct / 100);
         totalTarget += target;
         const diff = target - forecast;
-        const diffSign = diff >= 0 ? '+' : '';
 
         rowsHtml1 += `<tr>
             <td>${i+1}</td>
-            <td><span class="fc-seg-tag" style="background:${SEG6_COLORS[row.segment]}33;color:${SEG6_COLORS[row.segment]}">${row.segment}</span></td>
-            <td><select class="fc-share-month" data-row="${i}">${ALL_MONTHS.slice().reverse().map(m => `<option value="${m}"${m===row.shareMonth?' selected':''}>${m}</option>`).join('')}</select></td>
-            <td style="text-align:right"><span class="fc-computed">${sharePct.toFixed(2)}%</span></td>
-            <td><select class="fc-total-month" data-row="${i}">${ALL_MONTHS.slice().reverse().map(m => `<option value="${m}"${m===row.totalMonth?' selected':''}>${m}</option>`).join('')}</select></td>
-            <td style="text-align:right"><span class="fc-computed">${fmt$(totalMonthRevenue)}</span></td>
+            <td><input type="text" class="fc-label-input" data-row="${i}" value="${row.label}" style="width:140px;padding:4px 8px;border:1px solid #d1d5db;border-radius:4px;font-size:12px"/></td>
+            <td>
+                <select class="fc-cal-month" data-row="${i}">${ALL_MONTHS.slice().reverse().map(m => `<option value="${m}"${m===row.calMonth?' selected':''}>${m} (${fmt$(fcMonthTotal(m))})</option>`).join('')}</select>
+            </td>
+            <td style="text-align:center"><input type="number" class="fc-input fc-coef-pct" data-row="${i}" value="${row.coefPct}" min="0" step="5"/></td>
             <td style="text-align:right"><span class="fc-forecast-val">${fmt$(forecast)}</span></td>
+            <td style="text-align:center"><button class="fc-del-row" data-row="${i}" title="删除该行" style="background:#fee2e2;color:#991b1b;border:none;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:11px">✕ 删除</button></td>
         </tr>`;
 
         rowsHtml2 += `<tr>
             <td>${i+1}</td>
-            <td><span class="fc-seg-tag" style="background:${SEG6_COLORS[row.segment]}33;color:${SEG6_COLORS[row.segment]}">${row.segment}</span></td>
+            <td>${row.label}</td>
             <td style="text-align:right"><span class="fc-forecast-val">${fmt$(forecast)}</span></td>
             <td style="text-align:center"><input type="number" class="fc-input fc-target-pct" data-row="${i}" value="${row.targetPct}" min="0" step="5"/>%</td>
             <td style="text-align:right"><span class="fc-target-val">${fmt$(target)}</span></td>
-            <td style="text-align:right;color:${diff>=0?'#059669':'#dc2626'};font-family:monospace;font-size:12px">${diffSign}${fmt$(diff)}</td>
+            <td style="text-align:right;color:${diff>=0?'#059669':'#dc2626'};font-family:monospace;font-size:12px">${diff>=0?'+':''}${fmt$(diff)}</td>
         </tr>`;
     });
 
     // 汇总行
+    const rowCount = forecastState.rows.length;
     rowsHtml1 += `<tr class="fc-total">
-        <td>∑</td><td colspan="5">第7行 · 汇总 (${futureLabel} 预测大盘总额)</td>
+        <td>∑</td>
+        <td colspan="3">总计 (${rowCount} 行汇总)</td>
         <td style="text-align:right"><span class="fc-forecast-val">${fmt$(totalForecast)}</span></td>
+        <td></td>
     </tr>`;
     const totalDiff = totalTarget - totalForecast;
     const totalDiffPct = totalForecast > 0 ? (totalDiff/totalForecast*100) : 0;
     rowsHtml2 += `<tr class="fc-total">
-        <td>∑</td><td>汇总</td>
+        <td>∑</td>
+        <td>总计</td>
         <td style="text-align:right"><span class="fc-forecast-val">${fmt$(totalForecast)}</span></td>
-        <td style="text-align:center">综合 ${totalForecast>0?(totalTarget/totalForecast*100).toFixed(1):0}%</td>
+        <td style="text-align:center">${totalForecast>0?(totalTarget/totalForecast*100).toFixed(1):0}%</td>
         <td style="text-align:right"><span class="fc-target-val">${fmt$(totalTarget)}</span></td>
         <td style="text-align:right;color:${totalDiff>=0?'#10b981':'#fca5a5'};font-family:monospace">${totalDiff>=0?'+':''}${fmt$(totalDiff)} (${totalDiffPct>=0?'+':''}${totalDiffPct.toFixed(1)}%)</td>
     </tr>`;
 
     tbody1.innerHTML = rowsHtml1;
     tbody2.innerHTML = rowsHtml2;
+    $('#fc-row-count').textContent = `当前 ${rowCount} 行 (建议 6-12 行)`;
+    $('#btn-fc-add-row').disabled = rowCount >= 24;
 
-    // 绑定事件
-    document.querySelectorAll('.fc-share-month').forEach(sel => {
-        sel.onchange = e => { forecastState.rows[+e.target.dataset.row].shareMonth = e.target.value; renderForecast(); };
+    // 事件绑定
+    document.querySelectorAll('.fc-label-input').forEach(inp => {
+        inp.onblur = e => { forecastState.rows[+e.target.dataset.row].label = e.target.value.trim() || `行${+e.target.dataset.row+1}`; renderForecast(); };
     });
-    document.querySelectorAll('.fc-total-month').forEach(sel => {
-        sel.onchange = e => { forecastState.rows[+e.target.dataset.row].totalMonth = e.target.value; renderForecast(); };
+    document.querySelectorAll('.fc-cal-month').forEach(sel => {
+        sel.onchange = e => { forecastState.rows[+e.target.dataset.row].calMonth = e.target.value; renderForecast(); };
+    });
+    document.querySelectorAll('.fc-coef-pct').forEach(inp => {
+        inp.onchange = e => { forecastState.rows[+e.target.dataset.row].coefPct = parseFloat(e.target.value)||0; renderForecast(); };
     });
     document.querySelectorAll('.fc-target-pct').forEach(inp => {
         inp.onchange = e => { forecastState.rows[+e.target.dataset.row].targetPct = parseFloat(e.target.value)||0; renderForecast(); };
     });
+    document.querySelectorAll('.fc-del-row').forEach(btn => {
+        btn.onclick = e => {
+            if (forecastState.rows.length <= 1) { alert('至少保留 1 行'); return; }
+            forecastState.rows.splice(+e.target.dataset.row, 1);
+            renderForecast();
+        };
+    });
 }
 
-$('#fc-future-label').oninput = () => renderForecast();
+$('#btn-fc-add-row').onclick = () => {
+    const last = forecastState.rows[forecastState.rows.length-1] || {calMonth:'2026-05',coefPct:100,targetPct:110};
+    forecastState.rows.push({
+        label: `行${forecastState.rows.length+1}`,
+        calMonth: last.calMonth,
+        coefPct: last.coefPct,
+        targetPct: last.targetPct,
+    });
+    renderForecast();
+};
 $('#btn-fc-reset').onclick = () => {
-    forecastState.rows = FORECAST_SEGMENTS.map(seg => ({segment:seg, shareMonth:'2026-05', totalMonth:'2026-05', targetPct:110}));
-    $('#fc-future-label').value = '2026-06';
+    forecastState.rows = defaultForecastRows();
     renderForecast();
 };
 
