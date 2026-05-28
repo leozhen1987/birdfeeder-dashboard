@@ -140,12 +140,13 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
         <span style="font-size:11px;color:#2563eb;background:#dbeafe;padding:3px 8px;border-radius:4px;margin-left:auto" title="同一ASIN在不同月份的均价可能落入不同段位,看板按月动态归类。例如某ASIN 12月均价$120归入$100-150,3月均价$160归入$150-200。">📐 按月均价动态归类(61/91 ASIN跨段)</span>
     </div>
     <div class="dash-summary"><h3 style="margin:0;font-size:15px">📈 大盘 <span style="font-size:12px;font-weight:normal;color:#6b7280" id="dash-filter-label"></span></h3><div class="dash-summary-grid" id="dash-summary"></div></div>
-    <div class="chart-wrap"><h3 id="chart-title" style="margin:0 0 12px 0;font-size:15px">月度走势</h3><canvas id="trend-chart" class="chart-canvas"></canvas></div>
+    <div class="chart-wrap"><h3 id="chart-title" style="margin:0 0 12px 0;font-size:15px">月度走势 <span style="font-size:11px;color:#2563eb;font-weight:normal;margin-left:8px">💡 点击任意品牌月度点 → 查看该品牌该月TOP3 ASIN(可编辑)</span></h3><canvas id="trend-chart" class="chart-canvas" style="cursor:pointer"></canvas></div>
     <div class="chart-wrap"><h3 id="seg-title" style="margin:0 0 12px 0;font-size:15px">📊 每月各价格段销售额分布</h3><div style="display:flex;gap:8px;margin-bottom:8px"><button id="seg-view-share" class="active" style="font-size:12px;padding:4px 10px;border:1px solid #e5e7eb;background:#dbeafe;border-radius:4px;cursor:pointer">份额%</button><button id="seg-view-abs" style="font-size:12px;padding:4px 10px;border:1px solid #e5e7eb;background:#fff;border-radius:4px;cursor:pointer">绝对值</button></div><canvas id="share-chart" class="chart-canvas"></canvas></div>
     <div class="brand-leaderboard"><h3 style="margin:0 0 12px 0;font-size:15px">🏆 品牌排行</h3><table class="lb-table" id="lb-table"></table></div>
 </div>
 <!-- Modals -->
 <div class="modal-bg" id="modal-bg"><div class="modal" onclick="event.stopPropagation()"><button class="modal-close" onclick="closeModal()">×</button><div id="modal-content"></div></div></div>
+<div class="modal-bg" id="modal-drilldown"><div class="modal" onclick="event.stopPropagation()" style="max-width:980px"><button class="modal-close" onclick="closeModal('modal-drilldown')">×</button><div id="drilldown-content"></div></div></div>
 <div class="modal-bg" id="modal-add-asin"><div class="modal" onclick="event.stopPropagation()"><button class="modal-close" onclick="closeModal('modal-add-asin')">×</button>
 <h2>➕ 添加新ASIN</h2>
 <div class="notice info">⚠ 提交后, ASIN 会加入"待补全队列",下次定时任务(每周一10点)运行时会自动从卖家精灵API拉取数据。<br>急用可点"立即生成命令",我会给你一段终端命令立即拉取。</div>
@@ -561,7 +562,7 @@ function renderDashboard() {
     const pinSuffix = pinnedShown.length ? ` + ⭐${pinnedShown.join('/')}` : '';
     $('#chart-title').textContent = `${segLabel} TOP${dashState.topN}${pinSuffix} ${dashState.metric==='gmv'?'销售额':'销量'} ${dashState.display==='share'?'份额%':'走势'}`;
     if (trendChart) trendChart.destroy();
-    trendChart = new Chart($('#trend-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets}, options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{y:{beginAtZero:true,ticks:{callback:v=>dashState.display==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}}}});
+    trendChart = new Chart($('#trend-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets}, options:{responsive:true, onClick:(evt, items)=>{ if(!items.length) return; const it = items[0]; const ds = trendChart.data.datasets[it.datasetIndex]; let label = ds.label.replace(/^⭐\s*/, ''); if (label.startsWith('Other')) return; const month = ALL_MONTHS[it.index]; openBrandMonthDrilldown(label, month); }, plugins:{legend:{position:'bottom'}},scales:{y:{beginAtZero:true,ticks:{callback:v=>dashState.display==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}}}});
     // ===== 价格段月度分布图(替代原品牌份额堆叠) =====
     // 注意: 这个图不受 dashState.segment 影响, 始终按价格段拆分
     const SEG_LIST = ['$0-50','$50-100','$100-150','$150-200','$200+'];
@@ -618,6 +619,134 @@ $('#show-absolute').onclick = () => { dashState.display='absolute'; $('#show-abs
 $('#show-share').onclick = () => { dashState.display='share'; $('#show-share').classList.add('active'); $('#show-absolute').classList.remove('active'); renderDashboard(); };
 $('#seg-view-share').onclick = () => { dashState.segView='share'; $('#seg-view-share').style.background='#dbeafe'; $('#seg-view-abs').style.background='#fff'; renderDashboard(); };
 $('#seg-view-abs').onclick = () => { dashState.segView='abs'; $('#seg-view-abs').style.background='#dbeafe'; $('#seg-view-share').style.background='#fff'; renderDashboard(); };
+
+// ============ 趋势图点击 → 品牌月度TOP3 ASIN下钻 ============
+function openBrandMonthDrilldown(brand, month) {
+    const metric = dashState.metric; // 'gmv' or 'sales'
+    const metricLabel = metric === 'gmv' ? '销售额' : '销量';
+    const records = DATA.filter(r => r.brand === brand);
+    // 获取该品牌该月的所有月度记录,按当前指标排序
+    const rows = [];
+    records.forEach(r => {
+        const md = r.monthly_data.find(x => x.date === month);
+        if (!md) return;
+        const v = metric === 'gmv' ? md.amount : md.sales;
+        if (v > 0) rows.push({r, md, v});
+    });
+    rows.sort((a,b) => b.v - a.v);
+    const top3 = rows.slice(0, 3);
+    const others = rows.slice(3);
+    const segOf = p => p<=0?'—':p<50?'$0-50':p<100?'$50-100':p<150?'$100-150':p<200?'$150-200':'$200+';
+    const brandTotal = rows.reduce((s,x)=>s+x.v, 0);
+    const top3Total = top3.reduce((s,x)=>s+x.v, 0);
+    const fmtFn = metric==='gmv' ? fmt$ : fmtN;
+
+    const top3Html = top3.length === 0
+        ? `<div style="text-align:center;padding:30px;color:#9ca3af">该品牌在 ${month} 暂无销售记录</div>`
+        : `<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:8px">
+            <thead><tr style="background:#f3f4f6">
+                <th style="padding:8px;text-align:left">#</th>
+                <th style="padding:8px;text-align:left">图</th>
+                <th style="padding:8px;text-align:left">ASIN</th>
+                <th style="padding:8px;text-align:left">标题</th>
+                <th style="padding:8px;text-align:center">段</th>
+                <th style="padding:8px;text-align:right;width:90px">销量 ✎</th>
+                <th style="padding:8px;text-align:right;width:90px">均价 ✎</th>
+                <th style="padding:8px;text-align:right;width:110px">销售额 ✎</th>
+                <th style="padding:8px;text-align:center">操作</th>
+            </tr></thead>
+            <tbody>${top3.map(({r, md, v}, i) => {
+                const isStaged = stagedAsins.has(r.asin);
+                return `<tr ${isStaged?'style="background:#fef3c7"':''}>
+                    <td style="padding:6px"><span style="background:#fbbf24;color:#78350f;font-weight:700;width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:11px">${i+1}</span></td>
+                    <td style="padding:6px">${r.image_url?`<img src="${r.image_url}" style="width:50px;height:50px;object-fit:contain;background:#fafafa;border-radius:4px" loading="lazy"/>`:''}</td>
+                    <td style="padding:6px"><span class="asin-code">${r.asin}</span><br><a href="https://www.amazon.com/dp/${r.asin}" target="_blank" style="font-size:11px;color:#2563eb">🛒 Amazon</a></td>
+                    <td style="padding:6px;max-width:280px;font-size:12px;line-height:1.4">${(r.title||'').substring(0,90)}${(r.title||'').length>90?'…':''}</td>
+                    <td style="padding:6px;text-align:center"><span style="background:#f3f4f6;padding:2px 6px;border-radius:3px;font-size:11px">${segOf(md.price)}</span></td>
+                    <td style="padding:6px;text-align:right"><span class="dd-edit" contenteditable="true" data-asin="${r.asin}" data-month="${month}" data-field="sales" style="background:#fef3c7;padding:3px 6px;border-radius:3px;display:inline-block;min-width:60px;font-family:monospace;cursor:text">${md.sales}</span></td>
+                    <td style="padding:6px;text-align:right"><span class="dd-edit" contenteditable="true" data-asin="${r.asin}" data-month="${month}" data-field="price" style="background:#fef3c7;padding:3px 6px;border-radius:3px;display:inline-block;min-width:50px;font-family:monospace;cursor:text">${md.price}</span></td>
+                    <td style="padding:6px;text-align:right"><span class="dd-edit" contenteditable="true" data-asin="${r.asin}" data-month="${month}" data-field="amount" style="background:#fef3c7;padding:3px 6px;border-radius:3px;display:inline-block;min-width:80px;font-family:monospace;cursor:text">${md.amount}</span></td>
+                    <td style="padding:6px;text-align:center"><button class="save-btn${isStaged?' staged':''}" onclick="saveAsin('${r.asin}');setTimeout(()=>openBrandMonthDrilldown('${brand.replace(/'/g,"\\'")}','${month}'),50)">${isStaged?'✓':'💾'}</button></td>
+                </tr>`;
+            }).join('')}</tbody>
+        </table>`;
+
+    const othersHtml = others.length
+        ? `<details style="margin-top:14px"><summary style="cursor:pointer;color:#6b7280;font-size:13px;padding:6px">▼ 该品牌该月其余 ${others.length} 个产品(${fmtFn(brandTotal - top3Total)})</summary>
+            <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr style="background:#f9fafb"><th style="padding:6px;text-align:left">#</th><th style="padding:6px;text-align:left">ASIN</th><th style="padding:6px;text-align:right">销量</th><th style="padding:6px;text-align:right">均价</th><th style="padding:6px;text-align:right">销售额</th></tr></thead>
+            <tbody>${others.map(({r, md},i) => `<tr><td style="padding:4px">${i+4}</td><td style="padding:4px"><span class="asin-code">${r.asin}</span></td><td style="padding:4px;text-align:right">${fmtN(md.sales)}</td><td style="padding:4px;text-align:right">$${md.price}</td><td style="padding:4px;text-align:right">${fmt$(md.amount)}</td></tr>`).join('')}</tbody></table></details>`
+        : '';
+
+    $('#drilldown-content').innerHTML = `
+        <h2 style="margin:0 0 6px 0;font-size:18px">🎯 ${brand} · ${month} · TOP3 ${metricLabel}</h2>
+        <p style="color:#6b7280;font-size:12px;margin:0 0 10px 0">该品牌该月共 ${rows.length} 个产品贡献 ${fmtFn(brandTotal)},TOP3 占 ${rows.length?Math.round(top3Total/brandTotal*100):0}%</p>
+        <div class="notice info" style="margin-bottom:8px;font-size:12px">📐 黄色单元格可直接编辑。改一个字段会自动联动其他(销量×均价=销售额)。保存后变绿,点顶部 📥 统一导出 patch.json。</div>
+        ${top3Html}
+        ${othersHtml}
+    `;
+    openModal('modal-drilldown');
+    bindDrilldownEditEvents(brand, month);
+}
+
+function bindDrilldownEditEvents(currentBrand, currentMonth) {
+    document.querySelectorAll('#drilldown-content .dd-edit').forEach(el => {
+        el.addEventListener('focus', e => { e.target.dataset.original = e.target.textContent.trim(); });
+        el.addEventListener('blur', e => {
+            const asin = e.target.dataset.asin;
+            const monthDate = e.target.dataset.month;
+            const field = e.target.dataset.field;
+            const newVal = e.target.textContent.trim();
+            const orig = e.target.dataset.original;
+            if (newVal === orig) return;
+            const record = DATA.find(r => r.asin === asin);
+            if (!record) return;
+            const mIdx = record.monthly_data.findIndex(m => m.date === monthDate);
+            if (mIdx < 0) return;
+            const parsed = parseFloat(newVal.replace(/[$,]/g, ''));
+            if (isNaN(parsed)) { e.target.textContent = orig; return; }
+            const m = record.monthly_data[mIdx];
+            m[field] = parsed;
+            edits[`${asin}.${monthDate}.${field}`] = parsed;
+            e.target.style.background = '#dcfce7'; e.target.style.color = '#065f46';
+            // 公式联动
+            const rowKey = `${asin}.${monthDate}`;
+            if (!window._touchedFields) window._touchedFields = {};
+            if (!window._touchedFields[rowKey]) window._touchedFields[rowKey] = new Set();
+            window._touchedFields[rowKey].add(field);
+            const touched = window._touchedFields[rowKey];
+            let autoUpdated = null;
+            if (touched.has('sales') && touched.has('amount') && m.sales>0) {
+                const np = +(m.amount/m.sales).toFixed(2);
+                if (np !== m.price) { m.price = np; edits[`${asin}.${monthDate}.price`] = np; autoUpdated = 'price'; }
+            } else if (touched.has('amount') && touched.has('price') && m.price>0) {
+                const ns = Math.round(m.amount/m.price);
+                if (ns !== m.sales) { m.sales = ns; edits[`${asin}.${monthDate}.sales`] = ns; autoUpdated = 'sales'; }
+            } else if (touched.has('sales') && touched.has('price')) {
+                const na = Math.round(m.sales*m.price);
+                if (na !== m.amount) { m.amount = na; edits[`${asin}.${monthDate}.amount`] = na; autoUpdated = 'amount'; }
+            } else {
+                if (field === 'sales' || field === 'price') {
+                    const na = Math.round(m.sales*m.price);
+                    if (na !== m.amount) { m.amount = na; edits[`${asin}.${monthDate}.amount`] = na; autoUpdated = 'amount'; }
+                } else if (field === 'amount' && m.sales>0) {
+                    const np = +(m.amount/m.sales).toFixed(2);
+                    if (np !== m.price) { m.price = np; edits[`${asin}.${monthDate}.price`] = np; autoUpdated = 'price'; }
+                }
+            }
+            if (autoUpdated) {
+                const sel = `#drilldown-content .dd-edit[data-asin="${asin}"][data-month="${monthDate}"][data-field="${autoUpdated}"]`;
+                const linkedEl = document.querySelector(sel);
+                if (linkedEl) {
+                    linkedEl.textContent = m[autoUpdated];
+                    linkedEl.style.background = '#dbeafe';
+                    linkedEl.style.color = '#1e40af';
+                    linkedEl.title = '自动联动: ' + autoUpdated;
+                }
+            }
+            recomputeAggregates(record);
+        });
+    });
+}
 
 // ============ 月度编辑视图 ============
 const meState = { month: '2026-05', segment: '', brand: '', filterMode: 'nonzero' };
