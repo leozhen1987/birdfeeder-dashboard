@@ -2,6 +2,7 @@
 <html lang="zh-CN"><head><meta charset="UTF-8">
 <title>Bird Feeder with Camera — 画廊 v7</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 *{box-sizing:border-box}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;margin:0;background:#f5f7fa;color:#1f2937}
 .header{background:linear-gradient(135deg,#1f4e78 0%,#2e75b6 100%);color:white;padding:20px 30px;box-shadow:0 2px 8px rgba(0,0,0,0.1);position:sticky;top:0;z-index:100}
@@ -164,7 +165,7 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
         <span style="font-size:13px;font-weight:600">📈 销量预测</span>
         <button id="btn-fc-download" style="font-size:12px;padding:5px 12px;background:#10b981;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600" title="下载当前所有输入/目标/实际记录为JSON文件,方便备份和分享">📥 下载预算</button>
         <button id="btn-fc-import" style="font-size:12px;padding:5px 12px;background:#2563eb;color:#fff;border:none;border-radius:5px;cursor:pointer" title="从之前下载的JSON文件恢复">📤 导入预算</button>
-        <input type="file" id="fc-import-file" accept=".json" style="display:none"/>
+        <input type="file" id="fc-import-file" accept=".json,.xlsx" style="display:none"/>
         <button id="btn-fc-reset" style="font-size:12px;padding:5px 12px;background:#e5e7eb;border:none;border-radius:5px;cursor:pointer">↺ 全部重置</button>
         <span style="font-size:11px;color:#6b7280;margin-left:auto">流程: 第1部分填行→点计算→第2部分填目标%→第3部分录入实际看偏差</span>
     </div>
@@ -1306,96 +1307,252 @@ $('#btn-fc-reset').onclick = () => {
     renderForecastInputs();
 };
 
-// 下载预算 (JSON 文件)
+// 下载预算 (Excel 多 Sheet)
 $('#btn-fc-download').onclick = () => {
-    // 触发一次计算确保 forecasts 是最新的
+    if (typeof XLSX === 'undefined') return alert('Excel库未加载完成,请稍后重试');
     if (forecastState.inputs.length > 0 && !forecastState.calculated) {
-        if (!confirm('尚未点过"计算",当前下载只包含输入+目标+实际,不含预测结果。继续?')) return;
+        if (!confirm('尚未点过"计算",当前下载只包含输入,不含预测/目标/偏差。继续?')) return;
     }
-    const exportData = {
-        meta: {
-            generated_at: new Date().toISOString(),
-            tool: 'BirdFeederCam 销量预测',
-            version: '1.0',
-            data_source: 'leozhen1987.github.io/birdfeeder-dashboard',
-        },
-        // 输入 (第1部分)
-        inputs: forecastState.inputs,
-        // 预测结果 (计算后的快照, 含各段位金额)
-        forecasts: forecastState.forecasts,
-        // 目标% 矩阵 (第2部分)
-        targets: forecastState.targets,
-        // 实际销售记录 (第3部分)
-        actuals: forecastState.actuals,
-        calculated: forecastState.calculated,
-    };
-    // 同时生成一份易读的 summary 放到文件顶部注释里
-    let summary = '// === 销量预测备份 ===\n';
-    summary += `// 生成时间: ${new Date().toLocaleString('zh-CN')}\n`;
-    summary += `// 预测月份数: ${forecastState.inputs.length}\n`;
+    const wb = XLSX.utils.book_new();
+    const segs = FORECAST_SEGMENTS;
+
+    // Sheet 1: 摘要
+    const summaryRows = [
+        ['销量预测备份'],
+        ['生成时间', new Date().toLocaleString('zh-CN')],
+        ['工具', 'BirdFeederCam 销量预测'],
+        ['数据源', 'leozhen1987.github.io/birdfeeder-dashboard'],
+        [],
+        ['预测月份数', forecastState.inputs.length],
+        ['是否已计算', forecastState.calculated ? '是' : '否'],
+    ];
     if (forecastState.forecasts.length) {
         const grandTotal = forecastState.forecasts.reduce((s,f)=>s+f.total, 0);
-        summary += `// 预测总额: ${fmt$(grandTotal)}\n`;
+        summaryRows.push(['预测总额', grandTotal]);
         let targetTotal = 0;
-        forecastState.forecasts.forEach(f => {
-            FORECAST_SEGMENTS.forEach(s => {
-                targetTotal += f.bySegment[s] * (forecastState.targets[f.label]?.[s] || 0) / 100;
-            });
-        });
-        summary += `// 目标总额: ${fmt$(targetTotal)}\n`;
+        forecastState.forecasts.forEach(f => segs.forEach(s => targetTotal += f.bySegment[s] * (forecastState.targets[f.label]?.[s] || 0) / 100));
+        summaryRows.push(['目标总额', targetTotal]);
+        let actualTotal = 0;
+        forecastState.actuals.forEach(r => actualTotal += (r.price||0) * (r.qty||0));
+        summaryRows.push(['实际总额', actualTotal]);
+        summaryRows.push(['实际记录数', forecastState.actuals.length]);
+        summaryRows.push(['偏差(实-目)', actualTotal - targetTotal]);
     }
-    summary += `// 实际记录数: ${forecastState.actuals.length}\n`;
-    summary += '\n';
-    const json = summary + JSON.stringify(exportData, null, 2);
-    const blob = new Blob([json], {type: 'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const ws0 = XLSX.utils.aoa_to_sheet(summaryRows);
+    ws0['!cols'] = [{wch:20}, {wch:30}];
+    XLSX.utils.book_append_sheet(wb, ws0, '摘要');
+
+    // Sheet 2: 输入设置
+    const inputRows = [['#','未来预测月份','价格段口径(历史月)','销售额口径(历史月)','口径月总额$']];
+    forecastState.inputs.forEach((row, i) => {
+        inputRows.push([i+1, row.label, row.shareMonth, row.totalMonth, fcMonthTotal(row.totalMonth)]);
+    });
+    const ws1 = XLSX.utils.aoa_to_sheet(inputRows);
+    ws1['!cols'] = [{wch:5},{wch:18},{wch:22},{wch:22},{wch:18}];
+    XLSX.utils.book_append_sheet(wb, ws1, '1输入设置');
+
+    if (forecastState.calculated) {
+        // Sheet 3: 预测结果矩阵
+        const fcHeader = ['月份', ...segs, '月总预测'];
+        const fcRows = [fcHeader];
+        let segTot = {}; segs.forEach(s => segTot[s] = 0);
+        let grandFc = 0;
+        forecastState.forecasts.forEach(f => {
+            const row = [f.label];
+            segs.forEach(s => { row.push(f.bySegment[s]); segTot[s] += f.bySegment[s]; });
+            row.push(f.total); grandFc += f.total;
+            fcRows.push(row);
+        });
+        fcRows.push(['段位合计', ...segs.map(s => segTot[s]), grandFc]);
+        const ws2 = XLSX.utils.aoa_to_sheet(fcRows);
+        ws2['!cols'] = [{wch:14}].concat(segs.map(()=>({wch:14}))).concat([{wch:14}]);
+        XLSX.utils.book_append_sheet(wb, ws2, '2预测结果$');
+
+        // Sheet 4: 目标% 矩阵
+        const tgtPctRows = [['月份', ...segs]];
+        forecastState.forecasts.forEach(f => {
+            tgtPctRows.push([f.label, ...segs.map(s => forecastState.targets[f.label]?.[s] || 0)]);
+        });
+        const ws3 = XLSX.utils.aoa_to_sheet(tgtPctRows);
+        ws3['!cols'] = [{wch:14}].concat(segs.map(()=>({wch:12})));
+        XLSX.utils.book_append_sheet(wb, ws3, '3目标百分比');
+
+        // Sheet 5: 目标销售额$ 矩阵
+        const tgtAmtRows = [['月份', ...segs, '月总目标']];
+        let segTgtTot = {}; segs.forEach(s => segTgtTot[s] = 0);
+        let grandTgt = 0;
+        forecastState.forecasts.forEach(f => {
+            const row = [f.label];
+            let monthTot = 0;
+            segs.forEach(s => {
+                const v = f.bySegment[s] * (forecastState.targets[f.label]?.[s] || 0) / 100;
+                row.push(v); monthTot += v; segTgtTot[s] += v;
+            });
+            row.push(monthTot); grandTgt += monthTot;
+            tgtAmtRows.push(row);
+        });
+        tgtAmtRows.push(['段位合计', ...segs.map(s => segTgtTot[s]), grandTgt]);
+        const ws4 = XLSX.utils.aoa_to_sheet(tgtAmtRows);
+        ws4['!cols'] = [{wch:14}].concat(segs.map(()=>({wch:14}))).concat([{wch:14}]);
+        XLSX.utils.book_append_sheet(wb, ws4, '4目标销售额$');
+
+        // Sheet 6: 实际记录
+        const actHeader = [['#','月份','产品名/ASIN','单价','销量','销售总额','归属段']];
+        forecastState.actuals.forEach((rec, i) => {
+            const amt = (rec.price||0) * (rec.qty||0);
+            actHeader.push([i+1, rec.month, rec.product||'', rec.price||0, rec.qty||0, amt, seg6Of(rec.price)||'']);
+        });
+        const ws5 = XLSX.utils.aoa_to_sheet(actHeader);
+        ws5['!cols'] = [{wch:5},{wch:14},{wch:22},{wch:10},{wch:10},{wch:14},{wch:12}];
+        XLSX.utils.book_append_sheet(wb, ws5, '5实际记录');
+
+        // Sheet 7: 偏差汇总
+        const actualMap = {};
+        forecastState.forecasts.forEach(f => { actualMap[f.label] = {}; segs.forEach(s => actualMap[f.label][s] = 0); });
+        forecastState.actuals.forEach(rec => {
+            const s = seg6Of(rec.price);
+            if (s && actualMap[rec.month] && actualMap[rec.month][s] !== undefined) actualMap[rec.month][s] += (rec.price||0) * (rec.qty||0);
+        });
+        const devHeaderRow1 = ['月份'];
+        const devHeaderRow2 = [''];
+        segs.forEach(s => {
+            devHeaderRow1.push(s, '', '');
+            devHeaderRow2.push('实际$','目标$','偏差');
+        });
+        devHeaderRow1.push('月总实际','月总目标','月总偏差');
+        devHeaderRow2.push('','','');
+        const devRows = [devHeaderRow1, devHeaderRow2];
+        let totActual=0, totTarget=0;
+        let segActTot={}, segTgtTotD={}; segs.forEach(s=>{segActTot[s]=0; segTgtTotD[s]=0;});
+        forecastState.forecasts.forEach(f => {
+            const row = [f.label];
+            let mAct=0, mTgt=0;
+            segs.forEach(seg => {
+                const a = actualMap[f.label][seg];
+                const t = f.bySegment[seg] * (forecastState.targets[f.label]?.[seg] || 0) / 100;
+                row.push(a, t, a-t); mAct+=a; mTgt+=t;
+                segActTot[seg]+=a; segTgtTotD[seg]+=t;
+            });
+            const mDiff = mAct-mTgt;
+            row.push(mAct, mTgt, mDiff);
+            totActual+=mAct; totTarget+=mTgt;
+            devRows.push(row);
+        });
+        const sumRow = ['段位合计'];
+        segs.forEach(seg => { const d = segActTot[seg]-segTgtTotD[seg]; sumRow.push(segActTot[seg], segTgtTotD[seg], d); });
+        sumRow.push(totActual, totTarget, totActual-totTarget);
+        devRows.push(sumRow);
+        const ws6 = XLSX.utils.aoa_to_sheet(devRows);
+        // 合并表头
+        ws6['!merges'] = [];
+        for (let i=0; i<segs.length; i++) {
+            ws6['!merges'].push({s:{r:0,c:1+i*3},e:{r:0,c:3+i*3}});
+        }
+        ws6['!cols'] = [{wch:14}].concat(Array(segs.length*3+3).fill({wch:12}));
+        XLSX.utils.book_append_sheet(wb, ws6, '6偏差汇总');
+    }
+
     const ts = new Date().toISOString().replace(/[:T]/g,'-').substring(0,16);
-    a.href = url;
-    a.download = `销量预测_${ts}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    XLSX.writeFile(wb, `销量预测_${ts}.xlsx`);
 };
 
-// 导入预算
+// 导入预算 (支持 JSON 和 XLSX)
 $('#btn-fc-import').onclick = () => $('#fc-import-file').click();
 $('#fc-import-file').onchange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    const isXlsx = file.name.toLowerCase().endsWith('.xlsx');
     const reader = new FileReader();
     reader.onload = (ev) => {
         try {
-            // 去掉文件顶部的注释行
-            let content = ev.target.result;
-            content = content.replace(/^\/\/.*$/gm, '').trim();
-            const data = JSON.parse(content);
-            if (!data.inputs || !Array.isArray(data.inputs)) throw new Error('不是有效的预算文件');
-            if (!confirm(`将导入 ${data.inputs.length} 行预测 + ${(data.actuals||[]).length} 条实际记录。当前未保存的数据会被覆盖。继续?`)) return;
-            forecastState.inputs = data.inputs;
-            forecastState.forecasts = data.forecasts || [];
-            forecastState.targets = data.targets || {};
-            forecastState.actuals = data.actuals || [];
-            forecastState.calculated = !!data.calculated && forecastState.forecasts.length > 0;
-            // 重新渲染
-            renderForecastInputs();
-            if (forecastState.calculated) {
-                $('#fc-chart-area').style.display = 'block';
-                $('#fc-part2-section').style.display = 'block';
-                $('#fc-part3-section').style.display = 'block';
-                renderForecastChart();
-                renderTargetTable();
-                renderActualTable();
-                renderDeviationTable();
+            if (isXlsx) {
+                if (typeof XLSX === 'undefined') return alert('Excel库未加载完成');
+                const wb = XLSX.read(new Uint8Array(ev.target.result), {type: 'array'});
+                // 从 Sheet "1输入设置" 读取
+                const wsInputs = wb.Sheets['1输入设置'];
+                if (!wsInputs) throw new Error('找不到"1输入设置"工作表');
+                const inputData = XLSX.utils.sheet_to_json(wsInputs, {header:1, defval:''});
+                const inputs = [];
+                for (let i = 1; i < inputData.length; i++) {
+                    const r = inputData[i];
+                    if (r[1]) inputs.push({label: String(r[1]), shareMonth: String(r[2]), totalMonth: String(r[3])});
+                }
+                if (!inputs.length) throw new Error('未读取到任何输入行');
+
+                // 目标百分比
+                const targets = {};
+                const wsTgt = wb.Sheets['3目标百分比'];
+                if (wsTgt) {
+                    const tgtData = XLSX.utils.sheet_to_json(wsTgt, {header:1, defval:''});
+                    const header = tgtData[0]; // ['月份', ...segs]
+                    for (let i = 1; i < tgtData.length; i++) {
+                        const r = tgtData[i];
+                        const label = String(r[0]);
+                        if (!label) continue;
+                        targets[label] = {};
+                        for (let j = 1; j < header.length; j++) {
+                            targets[label][String(header[j])] = parseFloat(r[j]) || 0;
+                        }
+                    }
+                }
+
+                // 实际记录
+                const actuals = [];
+                const wsAct = wb.Sheets['5实际记录'];
+                if (wsAct) {
+                    const actData = XLSX.utils.sheet_to_json(wsAct, {header:1, defval:''});
+                    for (let i = 1; i < actData.length; i++) {
+                        const r = actData[i];
+                        if (r[1]) actuals.push({
+                            month: String(r[1]),
+                            product: String(r[2]||''),
+                            price: parseFloat(r[3])||0,
+                            qty: parseFloat(r[4])||0,
+                        });
+                    }
+                }
+
+                if (!confirm(`将从 Excel 导入 ${inputs.length} 行预测 + ${actuals.length} 条实际记录。当前未保存的数据会被覆盖。继续?`)) return;
+                forecastState.inputs = inputs;
+                forecastState.targets = targets;
+                forecastState.actuals = actuals;
+                forecastState.calculated = false; // 重新计算
+                forecastState.forecasts = [];
+                renderForecastInputs();
+                // 自动触发计算
+                calculateForecast();
+                alert(`✓ 已从 Excel 导入预算`);
+            } else {
+                // JSON 路径
+                let content = ev.target.result;
+                content = content.replace(/^\/\/.*$/gm, '').trim();
+                const data = JSON.parse(content);
+                if (!data.inputs || !Array.isArray(data.inputs)) throw new Error('不是有效的预算文件');
+                if (!confirm(`将导入 ${data.inputs.length} 行预测 + ${(data.actuals||[]).length} 条实际记录。当前未保存的数据会被覆盖。继续?`)) return;
+                forecastState.inputs = data.inputs;
+                forecastState.forecasts = data.forecasts || [];
+                forecastState.targets = data.targets || {};
+                forecastState.actuals = data.actuals || [];
+                forecastState.calculated = !!data.calculated && forecastState.forecasts.length > 0;
+                renderForecastInputs();
+                if (forecastState.calculated) {
+                    $('#fc-chart-area').style.display = 'block';
+                    $('#fc-part2-section').style.display = 'block';
+                    $('#fc-part3-section').style.display = 'block';
+                    renderForecastChart();
+                    renderTargetTable();
+                    renderActualTable();
+                    renderDeviationTable();
+                }
+                alert(`✓ 已从 JSON 导入预算\n生成时间: ${data.meta?.generated_at || '未知'}`);
             }
-            alert(`✓ 已导入预算\n生成时间: ${data.meta?.generated_at || '未知'}`);
         } catch (err) {
             alert('导入失败: ' + err.message);
         }
-        e.target.value = ''; // reset
+        e.target.value = '';
     };
-    reader.readAsText(file);
+    if (isXlsx) reader.readAsArrayBuffer(file);
+    else reader.readAsText(file);
 };
 
 $('#me-month').onchange = e => { meState.month = e.target.value; renderMonthEdit(); };
