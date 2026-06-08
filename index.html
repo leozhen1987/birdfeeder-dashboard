@@ -43,7 +43,8 @@
 .edit-toolbar button.primary{background:#10b981;color:white;border-color:#059669}
 .edit-toolbar button.danger{background:#fef2f2;color:#dc2626;border-color:#dc2626}
 table{width:100%;background:white;border-collapse:collapse;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.05)}
-th{background:#1f4e78;color:white;padding:12px 8px;text-align:left;font-size:11px;font-weight:600;position:sticky;top:140px;z-index:50}
+th{background:#1f4e78;color:white;padding:12px 8px;text-align:left;font-size:11px;font-weight:600;position:sticky;top:0;z-index:60}
+.table-scroll{max-height:calc(100vh - 150px);overflow:auto;border:1px solid #e5e7eb;border-radius:8px}
 td{padding:8px;border-bottom:1px solid #f3f4f6;font-size:13px;vertical-align:middle}
 tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{background:#fef3c7!important}
 .table-img{width:60px;height:60px;object-fit:contain;background:#f9fafb;border-radius:4px}
@@ -115,7 +116,7 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
         <button class="danger" id="btn-reset">↺ 重置</button>
         <span style="margin-left:auto;font-size:12px;color:#78350f">💡 修改完一行后点击"💾保存"暂存,最后统一提交</span>
     </div>
-    <table><thead><tr><th>图片</th><th>ASIN</th><th>品牌</th><th>段</th><th>标题</th><th>价格</th><th>累计GMV</th><th>累计销量</th><th>月度</th><th>操作</th></tr></thead><tbody id="table-body"></tbody></table>
+    <div class="table-scroll"><table><thead><tr><th>图片</th><th>ASIN</th><th>品牌</th><th>段</th><th>标题</th><th>价格</th><th>累计GMV</th><th>累计销量</th><th>月度</th><th>操作</th></tr></thead><tbody id="table-body"></tbody></table></div>
 </div>
 <div id="dashboard" class="dashboard">
     <div class="dash-controls">
@@ -125,7 +126,7 @@ tr:hover{background:#f9fafb}.merged-row{background:#eff6ff}.staged-row{backgroun
         <label>TOP数: <select id="dash-topn"><option value="5">5</option><option value="8" selected>8</option><option value="10">10</option><option value="15">15</option></select></label>
     </div>
     <div class="dash-summary"><h3 style="margin:0;font-size:15px">📈 大盘 <span style="font-size:12px;font-weight:normal;color:#6b7280" id="dash-filter-label"></span></h3><div class="dash-summary-grid" id="dash-summary"></div></div>
-    <div class="chart-wrap"><h3 id="chart-title" style="margin:0 0 12px 0;font-size:15px">月度走势</h3><canvas id="trend-chart" class="chart-canvas"></canvas></div>
+    <div class="chart-wrap"><h3 id="chart-title" style="margin:0 0 12px 0;font-size:15px">月度走势</h3><div style="font-size:11px;color:#6b7280;margin:-4px 0 8px">💡 点击曲线上的月份圆点,查看当月各品牌明细</div><canvas id="trend-chart" class="chart-canvas"></canvas></div><div class="chart-wrap" id="month-detail" style="display:none"></div>
     <div class="chart-wrap"><h3 id="share-title" style="margin:0 0 12px 0;font-size:15px">份额堆叠</h3><canvas id="share-chart" class="chart-canvas"></canvas></div>
     <div class="brand-leaderboard"><h3 style="margin:0 0 12px 0;font-size:15px">🏆 品牌排行</h3><table class="lb-table" id="lb-table"></table></div>
 </div>
@@ -466,11 +467,26 @@ function aggregateByBrand(seg, metric) {
     }));
     return { bm, bt };
 }
+function showMonthDetail(month){
+    const el = $('#month-detail'); if(!el) return;
+    const { bm } = aggregateByBrand(dashState.segment, dashState.metric);
+    const rows = Object.entries(bm).map(([b,ms])=>[b, ms[month]||0]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]);
+    const total = rows.reduce((s,[_,v])=>s+v,0);
+    const fmt = dashState.metric==='gmv'?fmt$:fmtN;
+    if(!rows.length){ el.style.display='none'; return; }
+    const body = rows.map(([b,v],i)=>`<tr><td>${i+1}</td><td><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${brandColor(b)};margin-right:6px;vertical-align:middle"></span>${b}</td><td class="num">${fmt(v)}</td><td class="num">${fmtPct(v/(total||1))}</td></tr>`).join('');
+    el.innerHTML = `<h3 style="margin:0 0 10px 0;font-size:14px">\ud83d\udcc5 ${month} \u660e\u7ec6 \u00b7 ${dashState.segment==='all'?'\u5168\u90e8\u6bb5':dashState.segment} \u00b7 ${dashState.metric==='gmv'?'\u9500\u552e\u989d':'\u9500\u91cf'} \u00b7 \u5408\u8ba1 ${fmt(total)} <span style="font-size:11px;font-weight:normal;color:#6b7280">(${rows.length}\u4e2a\u54c1\u724c)</span></h3><table class="lb-table"><thead><tr><th>#</th><th>\u54c1\u724c</th><th class="num">${dashState.metric==='gmv'?'\u9500\u552e\u989d':'\u9500\u91cf'}</th><th class="num">\u4efd\u989d</th></tr></thead><tbody>${body}</tbody></table>`;
+    el.style.display='block';
+    el.scrollIntoView({behavior:'smooth', block:'nearest'});
+}
 function renderDashboard() {
+    const _md=$('#month-detail'); if(_md){ _md.style.display='none'; _md.innerHTML=''; }
     const { bm, bt } = aggregateByBrand(dashState.segment, dashState.metric);
     const sorted = Object.entries(bt).sort((a,b)=>b[1]-a[1]);
-    const top = sorted.slice(0, dashState.topN).map(([b])=>b);
-    const other = sorted.slice(dashState.topN).map(([b])=>b);
+    const PINNED_BRANDS = ['Kiwibit'];   // 始终展示的品牌:即使在销量维度排名靠后也强制进图
+    let top = sorted.slice(0, dashState.topN).map(([b])=>b);
+    PINNED_BRANDS.forEach(p => { if (bt[p] !== undefined && !top.includes(p)) top.push(p); });
+    const other = sorted.map(([b])=>b).filter(b => !top.includes(b));
     const total = sorted.reduce((s,[_,v])=>s+v, 0);
     const monthTotals = {}; ALL_MONTHS.forEach(m => monthTotals[m] = 0);
     Object.values(bm).forEach(months => Object.entries(months).forEach(([m,v]) => { if(monthTotals[m] !== undefined) monthTotals[m] += v; }));
@@ -497,7 +513,7 @@ function renderDashboard() {
     }
     $('#chart-title').textContent = `${segLabel} TOP${dashState.topN}品牌 ${dashState.metric==='gmv'?'销售额':'销量'} ${dashState.display==='share'?'份额%':'走势'}`;
     if (trendChart) trendChart.destroy();
-    trendChart = new Chart($('#trend-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets}, options:{responsive:true,plugins:{legend:{position:'bottom'}},scales:{y:{beginAtZero:true,ticks:{callback:v=>dashState.display==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}}}});
+    trendChart = new Chart($('#trend-chart'), {type:'line', data:{labels:ALL_MONTHS,datasets}, options:{responsive:true,onClick:(evt)=>{const pts=trendChart.getElementsAtEventForMode(evt,'index',{intersect:false},true); if(pts&&pts.length) showMonthDetail(ALL_MONTHS[pts[0].index]);},plugins:{legend:{position:'bottom'}},scales:{y:{beginAtZero:true,ticks:{callback:v=>dashState.display==='share'?v+'%':(dashState.metric==='gmv'?'$'+(v/1000).toFixed(0)+'K':fmtN(v))}}}}});
     const shareDS = top.map((b,i) => ({label:b, data:ALL_MONTHS.map(m=>monthTotals[m]>0?(bm[b]?.[m]||0)/monthTotals[m]*100:0), backgroundColor:brandColor(b)+'CC', borderColor:brandColor(b), borderWidth: b==='Kiwibit'?2.5:1, fill:true}));
     if (other.length) shareDS.push({label:`Other`, data:ALL_MONTHS.map(m=>{const s=other.reduce((sm,b)=>sm+(bm[b]?.[m]||0),0); return monthTotals[m]>0?s/monthTotals[m]*100:0;}), backgroundColor:'#9ca3af80', borderWidth:1, fill:true});
     if (shareChart) shareChart.destroy();
